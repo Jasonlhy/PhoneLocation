@@ -9,6 +9,7 @@ import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.util.Timer;
 import java.util.TimerTask;
+import android.util.Log;
 
 /**
  * Schedule outgoing and incoming call. It is assumed that the activity already have the permission
@@ -55,7 +56,9 @@ public class ScheduleCallManager {
     public boolean endCall(){
         try {
             endCallMethod.invoke(endCallManager);
+            Log.d("EndCall", "invoked end call manager");
         } catch (InvocationTargetException | IllegalAccessException ex ){
+            Log.d("EndCall", "failed to end call");
             ex.printStackTrace();
             return false;
         }

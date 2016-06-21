@@ -5,9 +5,11 @@ import android.annotation.TargetApi;
 import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.database.Cursor;
 import android.location.Location;
 import android.location.LocationListener;
+import android.location.LocationManager;
 import android.net.Uri;
 import android.os.Bundle;
 import android.provider.ContactsContract;
@@ -26,15 +28,54 @@ import android.widget.TextView;
 import android.widget.Toast;
 import android.telephony.PhoneStateListener;
 
-public class MainActivity extends AppCompatActivity {
+import java.util.ArrayList;
 
-    private static final int REQUEST_CONTACT = 1;
+public class MainActivity extends AppCompatActivity {
+    /**
+     * Reqeust code used by Android system
+     */
+    private static final int REQUEST_CONTACT_CODE = 1;
+    private static final int REQUEST_PERMISSION_CODE = 2;
+
+    /**
+     * The outgoing call duration
+     */
+    private static final int ZERO_BIT_DURATION = 1000;
+    private static final int ONE_BIT_DURATION = 10000;
+    private static final int NEXT_PHONE_CALL_DURATION = 2000;
+
+    /**
+     * Size of the encoded
+     */
+    private final int SIZE = 8;
+
+    /**
+     * Object used to handle incoming and outcoming call
+     */
     private ScheduleCallManager scheduleCallManager;
+    private MyOutCallPhoneListener myOutCallPhoneListener;
 
     @TargetApi(23)
     public void requestPermissions() {
-        // not backward compatible with API < 23
-        ActivityCompat.requestPermissions(this, new String[]{Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.CALL_PHONE}, 1000);
+        /**
+         * The following codes are used to request permissions when under API 23
+         * For API < 23, the permissions  don't need  to be requested,  they just needed to  be written  inside he AndroidManifest.xml
+         * For API 23, the permissions are needed to be written inside the AndroidManifest.xml and request them in Runtime.
+         * ActivityCompat is used to provide backward compatible with API < 23, it supposed to do the right thing and return PERMISSION_GRANTED
+         */
+        String[] permissions = new String[]{Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.CALL_PHONE, Manifest.permission.READ_CONTACTS, Manifest.permission.READ_PHONE_STATE};
+        ArrayList<String> permissionNeeded = new ArrayList<String>();
+        for (String pem : permissions) {
+            if (ActivityCompat.checkSelfPermission(this, pem) == PackageManager.PERMISSION_DENIED) {
+                permissionNeeded.add(pem);
+            }
+        }
+
+        if (permissionNeeded.size() > 0) {
+            String[] requestPermissions = new String[permissionNeeded.size()];
+            permissionNeeded.toArray(requestPermissions);
+            ActivityCompat.requestPermissions(this, requestPermissions, REQUEST_PERMISSION_CODE);
+        }
     }
 
     @Override
@@ -54,54 +95,58 @@ public class MainActivity extends AppCompatActivity {
         });
 
         final MainActivity theMainActivity = this;
-        Button button = (Button) findViewById(R.id.button);
+        final Button sendLocationButton = (Button) findViewById(R.id.sendLocationButton);
+        final Button receiveLocationButton = (Button) findViewById(R.id.receiveLocationButton);
+        final TextView textView = (TextView) findViewById((R.id.textView));
 
+        // request location
         this.requestPermissions();
 
-        // listen to the phone state
-        MyPhoneStateListener mPhoneStateListener = new MyPhoneStateListener();
-        TelephonyManager telephonyManager = (TelephonyManager) getSystemService(Context.TELEPHONY_SERVICE);
-        telephonyManager.listen(mPhoneStateListener, PhoneStateListener.LISTEN_CALL_STATE);
+        // listen to the phone call state
+        final TelephonyManager telephonyManager = (TelephonyManager) getSystemService(Context.TELEPHONY_SERVICE);
 
         // my end call manager
         ScheduleCallManager scheduleCallManager = new ScheduleCallManager();
-        if (!scheduleCallManager.initialize(telephonyManager, this)){
+        if (!scheduleCallManager.initialize(telephonyManager, this)) {
             Toast.makeText(getApplicationContext(), "初始化EndCall Manager失敗", Toast.LENGTH_LONG).show();
         }
         this.scheduleCallManager = scheduleCallManager;
 
-        button.setOnClickListener(new View.OnClickListener() {
+        sendLocationButton.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                Intent intent = new Intent(Intent.ACTION_PICK, ContactsContract.Contacts.CONTENT_URI);
-                startActivityForResult(intent, REQUEST_CONTACT);
+                // This seem to work on nexus 5 simulator with API level 23 only
+                // but not working on my mac emulator with api level kitkat 4.4
+                // i can't make my mac emulator to receive any location message
+                // please test it on real phone
+                LocationManager manager = (LocationManager) theMainActivity.getSystemService(Context.LOCATION_SERVICE);
+                if (manager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
+                    try {
+                        manager.requestSingleUpdate(LocationManager.GPS_PROVIDER, new MyLocationListener(), null);
+                        textView.setText("請在等待GPS signal");
+                        receiveLocationButton.setEnabled(false);
 
-
-                // not working in my simulator comment out first
-                /* LocationManager manager = (LocationManager) theMainActivity.getSystemService(Context.LOCATION_SERVICE);
-              // List<String> providers =  manager.getAllProviders();
-
-
-                List<String> providers = manager.getProviders(true);
-                String bestProviders = null;
-                if (providers.contains(LocationManager.GPS_PROVIDER)){
-                    bestProviders = LocationManager.GPS_PROVIDER;
-                } else if (providers.contains(LocationManager.NETWORK_PROVIDER)){
-                    bestProviders = LocationManager.NETWORK_PROVIDER;
+                        // listen out phone call
+                        myOutCallPhoneListener = new MyOutCallPhoneListener();
+                        telephonyManager.listen(myOutCallPhoneListener, PhoneStateListener.LISTEN_CALL_STATE);
+                    } catch (SecurityException ex) {
+                        ex.printStackTrace();
+                    }
+                } else {
+                    Toast.makeText(getApplicationContext(), "請開啟GPS定位服務", Toast.LENGTH_LONG).show();
                 }
+            }
+        });
 
-                try {
-                    manager.requestSingleUpdate(bestProviders, new MyLocationListener(), null);
-                } catch (SecurityException ex) {
-                    ex.printStackTrace();
-                } */
-
-
+        receiveLocationButton.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                textView.setText("請在等待電話打進來");
+                sendLocationButton.setEnabled(false);
+                telephonyManager.listen(new MyInCallPhoneListener(), PhoneStateListener.LISTEN_CALL_STATE);
             }
         });
     }
-
-
 
 
     @Override
@@ -153,13 +198,14 @@ public class MainActivity extends AppCompatActivity {
                 System.out.println();
             }
 
+            // stored the encoded location
+            myOutCallPhoneListener.setEncoded(rect);
             pickContact();
-            // makePhoneCall();
         }
 
         public void pickContact() {
             Intent intent = new Intent(Intent.ACTION_PICK, ContactsContract.Contacts.CONTENT_URI);
-            MainActivity.this.startActivityForResult(intent, REQUEST_CONTACT);
+            MainActivity.this.startActivityForResult(intent, REQUEST_CONTACT_CODE);
         }
 
         @Override
@@ -203,6 +249,7 @@ public class MainActivity extends AppCompatActivity {
 
                     TextView textView = (TextView) findViewById(R.id.textView);
                     textView.setText("正在聯絡 " + contactName + "...");
+                    Log.d("Phone number: ", phoneNumber);
                     scheduleCallManager.setPhoneNumber(phoneNumber);
                     scheduleCallManager.makeCall();
                 } else {
@@ -218,48 +265,125 @@ public class MainActivity extends AppCompatActivity {
     /**
      *
      */
-    public class MyPhoneStateListener extends PhoneStateListener {
-        private final int SIZE = 8;
-        private int [][] encoded;
-        private int i = 0;
+    public class MyOutCallPhoneListener extends PhoneStateListener {
+        private int[][] encoded;
+        private int nextBitIndex = 0;
 
 
-        public void setEncoded(int [][] encoded){
-            if (encoded.length != SIZE && encoded[0].length != SIZE){
+        public void setEncoded(int[][] encoded) {
+            if (encoded.length != SIZE && encoded[0].length != SIZE) {
                 throw new IllegalArgumentException("Encoded should be " + SIZE + " * " + SIZE);
             }
             this.encoded = encoded;
-            i = 0;
+            nextBitIndex = 0;
         }
 
         @Override
         public void onCallStateChanged(int state, String incomingNumber) {
+            //  there are some inconsistent behaviours between different API
+            // some API will send the signal when phone listener is first registered
+            // some API will NOT send the signal when the phone listener is first registered
+            // therefore it is better to avoid the situation when the signal is sent  when the listener have null encoded
+            if (encoded == null) {
+                Log.d("null encoded", "null encoded");
+                switch (state) {
+                    case TelephonyManager.CALL_STATE_RINGING:
+                        Log.d("null encoded", "CALL_STATE_RINGIN");
+                        break;
+                    case TelephonyManager.CALL_STATE_OFFHOOK:
+                        Log.d("null encoded", "CALL_STATE_OFFHOOK");
+                        break;
+                    case TelephonyManager.CALL_STATE_IDLE:
+                        Log.d("null encoded", "CALL_STATE_IDLE");
+                        break;
+                }
+                super.onCallStateChanged(state, incomingNumber);
+                return;
+            }
+
+            Log.d("null encoded", "not null encoded");
             switch (state) {
                 case TelephonyManager.CALL_STATE_RINGING:
-                    Log.d("phone listener", "CALL_STATE_RINGIN");
+                    Log.d("outcall phone listener", "CALL_STATE_RINGIN");
                     break;
 
                 case TelephonyManager.CALL_STATE_OFFHOOK:
-                    Log.d("phone listener", "CALL_STATE_OFFHOOK");
-                    int content = encoded[i / SIZE][i % SIZE];
+                    Log.d("outcall phone listener", "CALL_STATE_OFFHOOK");
+                    int content = encoded[nextBitIndex / SIZE][nextBitIndex % SIZE];
                     if (content == 0) {
-                        scheduleCallManager.endCall(1000);
+                        scheduleCallManager.endCall(ZERO_BIT_DURATION);
                     } else {
-                        scheduleCallManager.endCall(10000);
+                        scheduleCallManager.endCall(ONE_BIT_DURATION);
                     }
                     break;
-
                 case TelephonyManager.CALL_STATE_IDLE:
-                    Log.d("phone listener", "CALL_STATE_IDLE");
-                    if (i < (SIZE * SIZE)){
-                        scheduleCallManager.makeCall(2000);
+                    Log.d("outcall phone listener", "CALL_STATE_IDLE");
+                    if (nextBitIndex < (SIZE * SIZE)) {
+                        scheduleCallManager.makeCall(NEXT_PHONE_CALL_DURATION);
                     }
-                    // successful
-                    i++;
+                    // successful deliveried a bit
+                    nextBitIndex++;
             }
 
             super.onCallStateChanged(state, incomingNumber);
         }
     }
 
+    /**
+     * Phone Listener listen to the in coming called
+     */
+    public class MyInCallPhoneListener extends PhoneStateListener {
+        private long startTime = 0;
+        private long endTime = 0;
+        private int nextBitIndex = 0;
+        private int[][] encoded;
+
+        public MyInCallPhoneListener() {
+            nextBitIndex = SIZE * SIZE;
+            encoded = new int[SIZE][SIZE];
+        }
+
+        @Override
+        public void onCallStateChanged(int state, String incomingNumber) {
+            switch (state) {
+                case TelephonyManager.CALL_STATE_RINGING:
+                    Log.d("Incall phone listener", "CALL_STATE_RINGIN");
+                    startTime = System.currentTimeMillis();
+                    break;
+                case TelephonyManager.CALL_STATE_OFFHOOK:
+                    Log.d("Incall phone listener", "CALL_STATE_OFFHOOK");
+                case TelephonyManager.CALL_STATE_IDLE:
+                    Log.d("Incall phone listener", "CALL_STATE_IDLE");
+                    endTime = System.currentTimeMillis();
+
+                    //  avoid the init signal sent by the system
+                    if (startTime > 0) {
+                        // not all are recieived yet
+                        if (nextBitIndex < (SIZE * SIZE)) {
+                            long durationMs = endTime - startTime;
+                            // actually I don't think the duration of the caller is exactly the same as the sender in term of mill seconds
+                            // if there are some difference between them, consider to add a aceeptable range.
+                            Log.d("Incall phone listener", durationMs + "");
+                            encoded[nextBitIndex / SIZE][nextBitIndex % SIZE] = (durationMs == ZERO_BIT_DURATION) ? 0 : 1;
+                            nextBitIndex++;
+                        } else {
+                            // https://developer.android.com/guide/appendix/g-app-intents.html
+                            // geo:latitude,longitude
+                            Decoder decoder = new Decoder();
+                            decoder.decode(encoded);
+                            double longitude = decoder.getLongitude();
+                            double latitude = decoder.getLatitude();
+
+                            // show google map
+                            String uriStr = "geo:" + latitude + "," + longitude;
+                            Uri uri = Uri.parse(uriStr);
+                            Intent it = new Intent(Intent.ACTION_VIEW, uri);
+                            startActivity(it);
+                        }
+                    }
+            }
+
+            super.onCallStateChanged(state, incomingNumber);
+        }
+    }
 }
